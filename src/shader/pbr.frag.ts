@@ -1,37 +1,53 @@
 export default `
 precision highp float;
 
-#define DIRECTIONAL_LIGHT_COUNT 0
-#define POINT_LIGHT_COUNT 1
-#define LIGHT_COUNT (DIRECTIONAL_LIGHT_COUNT + POINT_LIGHT_COUNT)
+// All of those defines are overwritten by the engine
+#define LIGHT_TYPE_DIRECTIONAL 0
+#define LIGHT_TYPE_POINT 1
 
-#define LIGHT_TYPE_POINT 0
-#define LIGHT_TYPE_DIRECTIONAL 1
+#define LIGHT_COUNT_DIRECTIONAL 1
+#define LIGHT_COUNT_POINT 1
+#define LIGHT_COUNT (LIGHT_COUNT_DIRECTIONAL + LIGHT_COUNT_POINT)
 
 #define PI 3.1415926535897932384626433832795
 
-in vec3 vWsPosition;
 in vec3 vWsNormal;
-in vec3 vWsViewPosition;
+in vec3 vWsViewDir;
+in vec3 vWsPosition;
 
 out vec4 outFragColor;
 
-struct Attributes
+struct Material
 {
-    vec3 position;
     vec3 albedo;
     float metallic;
     float roughness;
 };
-uniform Attributes uAttributes;
 
-struct Light {
+struct SphereProperties
+{
+    mat4 modelMatrix;
+    Material material;
+};
+uniform SphereProperties uSphere;
+
+struct LightProperties
+{
     int type;
     vec3 position;
+    vec3 direction;
     vec3 color;
     float intensity;
 };
-uniform Light uLights[LIGHT_COUNT];
+uniform LightProperties uLights[LIGHT_COUNT];
+
+struct EnvironmentProperties
+{
+    sampler2D diffuse;
+    sampler2D specular;
+    sampler2D brdfLUT;
+};
+uniform EnvironmentProperties uEnvironment;
 
 // Convert a unit cartesian vector to polar coordinates
 vec2 cartesianToPolar(vec3 cartesian) {
@@ -44,28 +60,25 @@ vec2 cartesianToPolar(vec3 cartesian) {
 
 // From three.js
 vec4 sRGBToLinear( in vec4 value ) {
-	return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
+    return vec4( mix( pow( value.rgb * 0.9478672986 + vec3( 0.0521327014 ), vec3( 2.4 ) ), value.rgb * 0.0773993808, vec3( lessThanEqual( value.rgb, vec3( 0.04045 ) ) ) ), value.a );
 }
 
 // From three.js
 vec4 LinearTosRGB( in vec4 value ) {
-	return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
+    return vec4( mix( pow( value.rgb, vec3( 0.41666 ) ) * 1.055 - vec3( 0.055 ), value.rgb * 12.92, vec3( lessThanEqual( value.rgb, vec3( 0.0031308 ) ) ) ), value.a );
 }
 
-vec3 getLightDirection(Light light) {
+vec3 get_light_dir(in LightProperties light, in vec3 wsPosition) {
     if (light.type == LIGHT_TYPE_DIRECTIONAL) {
-        return normalize(light.position);
-    } else {
-        vec3 light_pos_local = light.position + uAttributes.position;
-        return normalize(light_pos_local - vWsPosition);
-    }
+        return normalize(light.direction);
+    } else if (light.type == LIGHT_TYPE_POINT) {
+        return normalize(light.position - wsPosition);
+    } else { return vec3(0.0); }
 }
 
-vec3 getLightColor(Light light) {
-    return sRGBToLinear(vec4(light.color, 1.0)).rgb * light.intensity;
+vec3 get_light_color(in LightProperties light, in vec3 wsPosition) {
+    return light.color * light.intensity;
 }
-
-// Lighting model
 
 vec3 FresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
@@ -93,49 +106,69 @@ float DistributionGGX(vec3 N, vec3 H, float roughness) {
     return a2 / (PI * denom * denom);
 }
 
-// Main function
-void main() {
-    vec3 N = normalize(vWsNormal);   // Normal
-    vec3 V = normalize(vWsViewPosition - vWsPosition); // View direction
+vec3 RGBMToRGB(vec4 rgbm, float rangeMultiplier) {
+    return rgbm.rgb * rgbm.a * rangeMultiplier;
+}
 
-    vec3 albedo = sRGBToLinear(vec4(uAttributes.albedo, 1.0)).rgb;
-    float metallic = uAttributes.metallic;
-    float roughness = uAttributes.roughness;
+vec3 getSpecularColor(vec3 R, float roughness) {
+    return vec3(0.0);
+}
 
-    vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedo, metallic);
+void main()
+{
+    vec3 color = vec3(0.0);
+
+    vec3 N = normalize(vWsNormal);  // Normal
+    vec3 V = normalize(vWsViewDir); // View direction
+    vec3 R = reflect(-V, N);        // Reflection vector
+
+    Material m = uSphere.material;
+    vec3 albedo = sRGBToLinear(vec4(m.albedo, 1.0)).rgb;
+    vec3 f0 = mix(vec3(0.04), albedo, m.metallic);
 
     vec3 irradiance = vec3(0.0);
-
-    for (int i = 0; i < LIGHT_COUNT; ++i) {
-        Light light = uLights[i];
-        vec3 L = getLightDirection(light);
+    for (int i = 0; i < LIGHT_COUNT; ++i)
+    {
+        LightProperties light = uLights[i];
+        vec3 L = get_light_dir(light, vWsPosition);
         vec3 H = normalize(V + L);
-        vec3 radiance = getLightColor(light);
+        vec3 radiance = get_light_color(light, vWsPosition);
 
         // Cook-Torrance BRDF
-        float D = DistributionGGX(N, H, roughness);
-        vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-        float G = GeometrySmith(N, V, L, roughness);
+        float D = DistributionGGX(N, H, m.roughness);
+        vec3 F = FresnelSchlick(max(dot(H, V), 0.0), f0);
+        float G = GeometrySmith(N, V, L, m.roughness);
 
         vec3 numerator = D * G * F;
         float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
-        vec3 specular = numerator / denominator;
+        vec3 specular = numerator / max(denominator, 0.001);
 
         // Add kS and kD from image, and multiply by NdotL
         vec3 kS = F;
         vec3 kD = vec3(1.0) - kS;
-        kD *= 1.0 - metallic;
+        kD *= 1.0 - m.metallic;
 
         // Lambertian diffuse
         vec3 diffuse = (kD * albedo) / PI;
 
         float NdotL = max(dot(N, L), 0.0);
         irradiance += (diffuse + specular) * radiance * NdotL;
+
     }
+    color += irradiance;
 
-    // Output the final color
-    outFragColor = vec4(irradiance, 1.0);
+
+    // Diffuse IBL
+    vec2 diffuseUV = cartesianToPolar(N);
+    // Remap x from [-PI, PI] to [0, 1]
+    // Remap y from [-PI/2, PI/2] to [0, 1]
+    diffuseUV = diffuseUV / vec2(PI, PI / 2.0) + vec2(0.5, 0.5);
+    vec3 diffuseIBL = RGBMToRGB(texture(uEnvironment.diffuse, diffuseUV), 6.0) * albedo;
+    color += diffuseIBL;
+
+    // Specular IBL
+    // TODO: Implement specular IBL
+
+    outFragColor = LinearTosRGB(vec4(color, 1.0));
 }
-
 `;

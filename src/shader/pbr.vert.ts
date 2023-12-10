@@ -1,61 +1,55 @@
 export default `
-
 precision highp float;
 
 in vec3 in_position;
 in vec3 in_normal;
-#ifdef USE_UV
-  in vec2 in_uv;
-#endif // USE_UV
 
 /**
  * Varyings.
  */
 
-out vec3 vWsPosition;
 out vec3 vWsNormal;
-out vec3 vWsViewPosition;
-#ifdef USE_UV
-  out vec2 vUv;
-#endif // USE_UVs
+out vec3 vWsViewDir;
+out vec3 vWsPosition;
 
 /**
  * Uniforms List
  */
 
+struct Material
+{
+    vec3 albedo;
+    float metallic;
+    float roughness;
+};
+
+struct SphereProperties
+{
+    mat4 modelMatrix;
+    Material material;
+};
+uniform SphereProperties uSphere;
+
 struct Camera
 {
-  mat4 WsToCs; // World-Space to Clip-Space (proj * view)
-  vec3 position;
+    mat4 WsToCs; // World-Space to Clip-Space (proj * view)
+    vec3 position;
 };
 uniform Camera uCamera;
 
-struct Attributes
+void main()
 {
-  vec3 position;
-  vec3 albedo;
-  float metallic;
-  float roughness;
-};
-uniform Attributes uAttributes;
+    vec4 positionLocal = vec4(in_position, 1.0);
+    // Apply the model matrix to transform the vertex position to world space
+    vec4 positionWorld = uSphere.modelMatrix * positionLocal;
+    // Then apply the camera transformation to get the clip space position
+    gl_Position = uCamera.WsToCs * positionWorld;
 
-void
-main()
-{
-  vWsPosition = in_position + uAttributes.position;
-
-  vec4 positionLocal = vec4(vWsPosition, 1.0);
-  gl_Position = uCamera.WsToCs * positionLocal;
-
-  // Normalize normal between 0, 1.
-  vWsNormal = normalize(in_normal) * 0.5 + 0.5;
-
-  // Pass view position.
-  vWsViewPosition = uCamera.position - vWsPosition;
-
-  // Pass UVs.
-#ifdef USE_UV
-    vUv = in_uv;
-#endif // USE_UV
+    // Pass the world space position to the fragment shader
+    vWsPosition = positionWorld.xyz;
+    // Transform the normal to world space
+    vWsNormal = normalize(in_normal);
+    // Transform the view direction to world space
+    vWsViewDir = normalize(uCamera.position-positionWorld.xyz);
 }
 `;

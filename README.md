@@ -197,3 +197,8 @@ When working on big rendering project, we often want several versions of a same 
 Using `#define`, we take advantage of the preproccessor to compile different variants.
 
 The values in the `defines` dictionnary will basically be preprended too your shader before compiling it.
+
+# What I have done
+
+I did the entire TP up to Specular IBL but have some issues with previous steps stopping me from completing specular ibl completely. I think the only thing missing there is the fetching at the proper place on the texture
+
